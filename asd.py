@@ -1,165 +1,192 @@
-# app.py – LOTO 12/66 Optimizator Premium (local)
-import streamlit as st, pandas as pd, numpy as np, plotly.express as px, io, base64
+import streamlit as st
 from collections import Counter
-import itertools, random, os
 
-st.set_page_config(page_title="Loto 12/66 Optim Premium", layout="wide")
-st.title("📊 LOTO 12/66 – Optimizator Premium (local)")
+# ==============================
+# CONFIGURARE PAGINĂ
+# ==============================
+st.set_page_config(
+    page_title="Verificare Loterie",
+    page_icon="🎰",
+    layout="wide"
+)
 
-# ---------- 1. Upload RUNDE ----------
-st.header("1. Încarcă RUNDELE (.txt)")
-f1 = st.file_uploader("13k runde vechi", type="txt")
-f2 = st.file_uploader("3k runde recente", type="txt")
+st.title("🎰 Verificare Variante Loterie")
+st.divider()
 
-# ---------- 2. Upload VARIANTE ----------
-st.header("2. Încarcă VARIANTELE TALE (v4.txt)")
-fv4 = st.file_uploader("v4.txt – format: ID, a b c d", type="txt")
+# ==============================
+# FUNCȚII
+# ==============================
+@st.cache_data(show_spinner=False)
+def parse_runde_bulk(text):
+    runde = []
+    for linie in text.splitlines():
+        nums = [int(n) for n in linie.split(",") if n.strip().isdigit()]
+        if len(nums) >= 6:  # minim 6 numere pentru o rundă
+            runde.append(sorted(set(nums)))  # eliminăm duplicate și sortăm
+    return runde
 
-# ---------- 3. Sidebar – Premium flags ----------
-st.sidebar.header("Premium – Opțiuni")
-opt_cov   = st.sidebar.checkbox("Single-Draw Cover 0,2 % (Monte-Carlo 100k)", value=True)
-opt_bias  = st.sidebar.checkbox("Bias-Clean (elim >3σ)", value=True)
-opt_gap20 = st.sidebar.checkbox("Gap-20 Flush", value=True)
-opt_edge  = st.sidebar.checkbox("Edge-Balance (fără 3+ consecutive)", value=True)
-opt_par   = st.sidebar.checkbox("Parity-Symmetry (25/50)", value=True)
-opt_cold  = st.sidebar.checkbox("Cold-Start Protect (primele 10)", value=True)
-swap_no   = st.sidebar.slider("Câte swap-uri", 10, 200, 60)
+@st.cache_data(show_spinner=False)
+def parse_variante_bulk(text):
+    variante = []
+    for linie in text.splitlines():
+        if "," not in linie:
+            continue
+        try:
+            idv, rest = linie.split(",", 1)
+            nums = [int(n) for n in rest.split() if n.strip().isdigit()]
+            if len(nums) == 3:
+                variante.append({
+                    "id": idv.strip(), 
+                    "numere": sorted(set(nums))  # sortăm și eliminăm duplicate
+                })
+        except:
+            continue
+    return variante
 
-# ---------- funcții ----------
-def parse_draw(text):
-    lines = text.strip().splitlines()
-    return [list(map(int, line.replace(',',' ').split())) for line in lines if line.strip()]
+# ==============================
+# SESSION STATE
+# ==============================
+st.session_state.setdefault("runde", [])
+st.session_state.setdefault("variante", [])
 
-def parse_v4(text):
-    lines = text.strip().splitlines()
-    return [tuple(map(int, line.split(',')[1].split())) for line in lines if line.strip()]
+# ==============================
+# INPUT
+# ==============================
+col1, col2 = st.columns(2)
 
-def hit_rate(draws, variants):
-    var_set = set(variants)
-    hits = 0
-    for d in draws:
-        s = set(d)
-        if any(tuple(sorted(v)) in var_set for v in itertools.combinations(s, 4)):
-            hits += 1
-    return hits / len(draws)
+with col1:
+    st.header("📋 Runde")
+    text_runde = st.text_area(
+        "Format: 1,6,7,9,44,77 (o rundă pe linie)",
+        height=180,
+        key="input_runde"
+    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("➕ Adaugă Runde", type="primary", use_container_width=True, key="add_runde"):
+            st.session_state.runde += parse_runde_bulk(text_runde)
+            st.rerun()
+    with col_b:
+        if st.button("🗑️ Șterge Runde", use_container_width=True, key="del_runde"):
+            st.session_state.runde = []
+            st.rerun()
 
-def monte_carlo_miss_max(variants, n=100000):
-    var_set = set(variants)
-    max_gap = 0; gap = 0
-    for _ in range(n):
-        draw = random.sample(range(1, 67), 12)
-        s = set(draw)
-        if any(tuple(sorted(v)) in var_set for v in itertools.combinations(s, 4)):
-            gap = 0
-        else:
-            gap += 1
-            max_gap = max(max_gap, gap)
-    return max_gap
+with col2:
+    st.header("🎲 Variante (Triplete)")
+    text_variante = st.text_area(
+        "Format: 1, 6 7 15",
+        height=180,
+        key="input_variante"
+    )
+    col_c, col_d = st.columns(2)
+    with col_c:
+        if st.button("➕ Adaugă Variante", type="primary", use_container_width=True, key="add_var"):
+            st.session_state.variante += parse_variante_bulk(text_variante)
+            st.rerun()
+    with col_d:
+        if st.button("🗑️ Șterge Variante", use_container_width=True, key="del_var"):
+            st.session_state.variante = []
+            st.rerun()
 
-def bias_filter(variants, draws, sigma=3):
-    from statistics import stdev, mean
-    freq = Counter(n for d in draws for n in d)
-    m, s = mean(freq.values()), stdev(freq.values())
-    bad_nums = {n for n, f in freq.items() if f > m + sigma * s}
-    return [v for v in variants if not any(x in bad_nums for x in v)]
+# ==============================
+# REZULTATE
+# ==============================
+st.divider()
+st.header("🏆 Rezultate")
 
-def edge_filter(variants):
-    return [v for v in variants if not any(len([x for x in v if x in {1, 2, 3, 64, 65, 66}]) >= 3)]
+if st.session_state.runde and st.session_state.variante:
+    minim = st.slider(
+        "Numere minime potrivite (match):",
+        min_value=2,
+        max_value=3,
+        value=3,
+        key="slider_minim"
+    )
 
-def parity_filter(variants):
-    grps = [variants[i:i+50] for i in range(0, len(variants), 50)]
-    out = []
-    for g in grps:
-        need_even = 25 * 4
-        have_even = 0
-        for v in g:
-            cnt_even = sum(1 for x in v if x % 2 == 0)
-            if have_even + cnt_even <= need_even:
-                out.append(v)
-                have_even += cnt_even
-            else:
-                # flip one number to balance
-                v = list(v)
-                for i, x in enumerate(v):
-                    if (x % 2 == 0 and have_even + cnt_even > need_even) or (x % 2 and have_even + cnt_even < need_even):
-                        v[i] = x + 1 if x % 2 else x - 1
-                        if 1 <= v[i] <= 66: break
-                out.append(tuple(v))
-                have_even += sum(1 for x in v if x % 2 == 0)
-    return out
+    # === Calcul statistic ===
+    total_hits = 0
+    unique_hits = 0
+    variant_stats = {v["id"]: 0 for v in st.session_state.variante}
+    runde_acoperite = 0
 
-def cold_start(variants):
-    need = set(range(1, 67))
-    out = []
-    for v in variants[:10]:
-        for x in v:
-            if x in need:
-                out.append(x)
-                need.discard(x)
-        if not need: break
-    return variants
+    for runda in st.session_state.runde:
+        rset = set(runda)
+        hit_in_runda = False
+        
+        for v in st.session_state.variante:
+            match_count = len(set(v["numere"]) & rset)
+            if match_count >= minim:
+                variant_stats[v["id"]] += 1
+                total_hits += 1
+                if not hit_in_runda:
+                    unique_hits += 1
+                    hit_in_runda = True
+                    runde_acoperite += 1
 
-def covering_greedy(target=1050, covers=0.998):
-    all_4t = list(itertools.combinations(range(1, 67), 4))
-    all_12 = list(itertools.combinations(range(1, 67), 12))
-    all_12 = [set(x) for x in random.sample(all_12, 50000)]  # esantion rapid
-    uncovered = set(itertools.combinations(range(1, 67), 4))
-    selected = []
-    for _ in range(target):
-        best = max(all_4t, key=lambda t: sum(1 for s in all_12 if t in s and t in uncovered))
-        selected.append(best)
-        uncovered.discard(best)
-        if len(uncovered) < int((1-covers)*len(all_4t)): break
-    return selected
+    # ==============================
+    # METRICS
+    # ==============================
+    col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+    
+    col_s1.metric("Runde analizate", len(st.session_state.runde))
+    col_s2.metric("Variante", len(st.session_state.variante))
+    col_s3.metric("Runde acoperite", f"{runde_acoperite} ({runde_acoperite/len(st.session_state.runde)*100:.1f}%)")
+    col_s4.metric("Total Hit-uri", total_hits)
+    col_s5.metric("Hit-uri Unice", unique_hits)
 
-# ---------- logică principală ----------
-if f1 and f2 and fv4:
-    draws_old = parse_draw(f1.read().decode())
-    draws_new = parse_draw(f2.read().decode())
-    v4_var    = parse_v4(fv4.read().decode())
+    st.divider()
 
-    st.subheader("3. Rezultate pe variantele tale")
-    hr_old = hit_rate(draws_old, v4_var)
-    hr_new = hit_rate(draws_new, v4_var)
-    st.write(f"Hit-rate vechi: {hr_old:.2%}")
-    st.write(f"Hit-rate recent: {hr_new:.2%}")
+    # Top Variante
+    st.subheader("📊 Top 20 Variante (după număr de hit-uri)")
+    sorted_variants = sorted(variant_stats.items(), key=lambda x: x[1], reverse=True)
+    for vid, count in sorted_variants[:20]:
+        procent = count / len(st.session_state.runde) * 100
+        st.text(f"Varianta {vid:>4} → {count:>3} hit-uri ({procent:.1f}%)")
 
-    # găuri comune
-    all_old = set(tuple(sorted(v)) for d in draws_old for v in itertools.combinations(d, 4))
-    all_new = set(tuple(sorted(v)) for d in draws_new for v in itertools.combinations(d, 4))
-    gauri = all_old.union(all_new) - set(v4_var)
-    st.write(f"Găuri comune: {len(gauri)} buc")
+    st.divider()
 
-    if st.button("4. Optimizează acum"):
-        var = v4_var.copy()
-        if opt_bias:  var = bias_filter(var, draws_old + draws_new)
-        if opt_edge:  var = edge_filter(var)
-        if opt_par:   var = parity_filter(var)
-        if opt_cold:  var = cold_start(var)
-        if opt_gap20:
-            # swap cu găuri cele mai frecvente
-            g_top = Counter(gauri).most_common(swap_no)
-            to_add = [g[0] for g in g_top]
-            to_rem = var[-swap_no:]  # cele mai rare din coadă
-            var = var[:-swap_no] + to_add
-        if opt_cov:
-            # covering design suplimentar
-            cov = covering_greedy(target=1050-len(var))
-            var = var[:1050-len(cov)] + cov
-        var = var[:1050]
+    # Afisare pe runde
+    st.subheader("📋 Detalii pe fiecare rundă")
+    with st.container(height=400):
+        for i, runda in enumerate(st.session_state.runde, 1):
+            cnt = sum(1 for v in st.session_state.variante 
+                     if len(set(v["numere"]) & set(runda)) >= minim)
+            st.text(f"Runda {i:>3} → {cnt:>2} variante câștigătoare")
 
-        # validare Monte-Carlo
-        max_gap = monte_carlo_miss_max(var, 100000)
-        st.success(f"Optimizat! Gap maxim simulat: {max_gap} runde (< 0,2 % VaR)")
+    # ==============================
+    # DOWNLOAD
+    # ==============================
+    st.divider()
+    st.subheader("⬇️ Download")
+    col_d1, col_d2, col_d3, col_d4 = st.columns(4)
 
-        # export TXT
-        out_txt = "\n".join(f"{i+1},{' '.join(map(str,v))}" for i,v in enumerate(var))
-        st.download_button("5. Export listă optimă (.txt)", data=out_txt, file_name="v4_optim.txt", mime="text/plain")
+    with col_d1:
+        st.download_button(
+            "Runde", 
+            "\n".join(",".join(map(str, r)) for r in st.session_state.runde),
+            "runde.txt"
+        )
+    with col_d2:
+        st.download_button(
+            "Variante", 
+            "\n".join(f"{v['id']}, {' '.join(map(str, v['numere']))}" for v in st.session_state.variante),
+            "variante.txt"
+        )
+    with col_d3:
+        st.download_button(
+            "Toate castigurile", 
+            "\n".join(f"{v['id']}, {' '.join(map(str, v['numere']))}" 
+                     for v in st.session_state.variante if variant_stats[v["id"]] > 0),
+            "castiguri_totale.txt"
+        )
+    with col_d4:
+        st.download_button(
+            "Top Variante", 
+            "\n".join(f"{vid}, {count}" for vid, count in sorted_variants),
+            "top_variante.txt"
+        )
 
-        # vizual rapid
-        if st.checkbox("Arată heatmap 66×66"):
-            freq = Counter(n for v in var for n in v)
-            fig = px.imshow([[freq.get(r*6+c,0) for c in range(1,7)] for r in range(11)], 
-                            labels=dict(x="Coloană",y="Rând",color="Frecvență"),
-                            title="Frecvență numere în lista optimă")
-            st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("➡️ Introdu runde și variante pentru a vedea analiza.")
+
+st.caption("Made for strategy testing • Curățat și îmbunătățit")
