@@ -2,7 +2,7 @@ import streamlit as st
 from collections import Counter
 
 # ==============================
-# CONFIGURARE PAGINĂ
+# CONFIGURARE PAGINĂa
 # ==============================
 st.set_page_config(
     page_title="Verificare Loterie",
